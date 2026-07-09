@@ -1,4 +1,4 @@
-name: Windows 10 RDP
+name: Windows 10 RDP Perfect
 
 on: [push, workflow_dispatch]
 
@@ -8,69 +8,81 @@ jobs:
     timeout-minutes: 360
 
     steps:
-    - name: 1. Tải Ngrok Phiên Bản Mới
+    - name: 1 & 2. Tải và Giải Nén Ngrok Tối Ưu (Chống lỗi mạng)
       run: |
-        Invoke-WebRequest -Uri "https://equinox.io" -OutFile ngrok.zip
-    
-    - name: 2. Giải Nén Ngrok
-      run: |
+        $urls = @(
+            "https://equinox.io",
+            "https://equinox.io"
+        )
         New-Item -ItemType Directory -Force -Path C:\ngrok_files
-        Expand-Archive -Path .\ngrok.zip -DestinationPath C:\ngrok_files -Force
         
+        foreach ($url in $urls) {
+            try {
+                Write-Host "Đang tải Ngrok từ nguồn: $url"
+                Invoke-WebRequest -Uri $url -OutFile C:\ngrok_files\ngrok.zip -TimeoutSec 30 -ErrorAction Stop
+                if ((Get-Item C:\ngrok_files\ngrok.zip).Length -gt 1MB) {
+                    Write-Host "Tải thành công! Đang giải nén..."
+                    tar -xf C:\ngrok_files\ngrok.zip -C C:\ngrok_files
+                    if (Test-Path C:\ngrok_files\ngrok.exe) { break }
+                }
+            } catch {
+                Write-Host "Nguồn tải gặp sự cố, đang chuyển sang nguồn dự phòng..." -ForegroundColor Yellow
+            }
+        }
+        
+        if (-not (Test-Path C:\ngrok_files\ngrok.exe)) {
+            Write-Host "❌ Lỗi hệ thống GitHub không tải được file. Vui lòng bấm Re-run để máy ảo nhận mạng mới." -ForegroundColor Red
+            exit 1
+        }
+
     - name: 3. Xác thực tài khoản Ngrok
       run: |
         C:\ngrok_files\ngrok.exe config add-authtoken $Env:NGROK_AUTH_TOKEN
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        
+
     - name: 4. Kích hoạt Remote Desktop (RDP)
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-        
-    - name: 5. Đổi Mật Khẩu Hợp Lệ
+
+    - name: 5. Cấu Hình Tài Khoản Đăng Nhập Mặc Định
       run: |
         $Password = ConvertTo-SecureString "Cyb3rking@2026" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $Password
 
-    - name: 6. Khởi tạo đường truyền Ngrok dưới nền
+    - name: 6. Khởi chạy Ngrok chạy ngầm
       run: |
         Start-Process C:\ngrok_files\ngrok.exe -ArgumentList "tcp 3389"
-        
-    - name: 7. Lấy Thông Tin Kết Nối RDP (Tự Động Thử Lại Nếu Chậm)
+
+    - name: 7. Tự động lấy thông tin kết nối RDP
       run: |
-        $maxAttempts = 12
-        $attempt = 1
+        $maxAttempts = 15
         $NgrokPublicUrl = $null
-        
-        Write-Host "Đang chờ Ngrok tạo đường truyền kết nối..." -ForegroundColor Yellow
-        
-        while ($null -eq $NgrokPublicUrl -and $attempt -le $maxAttempts) {
+        for ($i = 1; $i -le $maxAttempts; $i++) {
             try {
                 $NgrokPublicUrl = (Invoke-RestMethod -Uri "http://127.0.0" -TimeoutSec 5).tunnels.public_url
-                if (-not $NgrokPublicUrl) { throw "Đang tải dữ liệu..." }
+                if ($NgrokPublicUrl) { break }
             } catch {
-                Write-Host "Thử lại lần $attempt/$maxAttempts: Ngrok đang khởi động..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 5
-                $attempt++
+                Write-Host "Đang chờ kết nối máy ảo (Lần $i/$maxAttempts)..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 4
             }
         }
-        
+
         if ($NgrokPublicUrl) {
             $CleanUrl = $NgrokPublicUrl -replace "tcp://", ""
             Write-Host "=============================================" -ForegroundColor Green
-            Write-Host " KẾT NỐI THÀNH CÔNG! THÔNG TIN RDP CỦA BẠN:" -ForegroundColor Green
+            Write-Host " KHỞI TẠO THÀNH CÔNG!" -ForegroundColor Green
             Write-Host " ĐỊA CHỈ IP RDP: $CleanUrl" -ForegroundColor Cyan
             Write-Host " USERNAME: runneradmin" -ForegroundColor Cyan
             Write-Host " PASSWORD: Cyb3rking@2026" -ForegroundColor Cyan
             Write-Host "=============================================" -ForegroundColor Green
         } else {
-            Write-Host "❌ LỖI QUÁ THỜI GIAN: Ngrok không phản hồi sau 1 phút!" -ForegroundColor Red
-            Write-Host "👉 Vui lòng kiểm tra lại xem biến 'NGROK_AUTH_TOKEN' trong Settings > Secrets đã đúng chưa." -ForegroundColor Yellow
+            Write-Host "❌ Bạn chưa thêm TOKEN Ngrok vào mục Settings > Secrets của GitHub nên máy ảo bị từ chối kết nối." -ForegroundColor Red
             exit 1
         }
-        
+
     - name: 8. Duy trì máy ảo liên tục
       run: |
         while ($true) { Start-Sleep -Seconds 60 }
